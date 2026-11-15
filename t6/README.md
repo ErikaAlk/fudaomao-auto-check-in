@@ -6,7 +6,7 @@
 
 学校任务名称和北京时间的起止时间从链接对应的详情接口读取，首次尝试时间为任务开始加五分钟，截止时间为学校结束时间。页面显示这些时间，配置接口按识别结果保存。已经安装的管理服务更新后，在每个任务点击“读取任务信息”以保存时间元数据；新任务和从单账号迁入的任务会自动读取。读取失败的任务不会使用缺省时间开始自动调度。仅支持北京时间当天实例；跨日期或开始五分钟后已结束的任务会显示错误。
 
-将根目录 `attendance.py`、`lzu_api.py`、`secure_store.py` 与本目录 `manager.py`、`manager_store.py`、`manager_worker.py`、`manager_admin.py`、`lzu-attendance-manager.service` 复制到同一个受保护运行目录。使用该目录的虚拟环境安装 `requirements-manager.txt` 中的依赖；从源码目录安装时执行 `运行目录/.venv/bin/pip install -r t6/requirements-manager.txt`。
+将根目录 `attendance.py`、`lzu_api.py`、`secure_store.py` 与本目录 `manager.py`、`manager_store.py`、`manager_notifications.py`、`manager_worker.py`、`manager_admin.py`、`lzu-attendance-manager.service` 复制到同一个受保护运行目录。使用该目录的虚拟环境安装 `requirements-manager.txt` 中的依赖；从源码目录安装时执行 `运行目录/.venv/bin/pip install -r t6/requirements-manager.txt`。
 
 在运行目录执行：
 
@@ -35,7 +35,11 @@ lzu_attendance: !include lzu_attendance_secrets.yaml
 
 检查 HA 配置并重新启动 Core，侧栏出现“签到”。外部访问沿用 HA 的 HTTPS 地址。管理接口和页面入口都要求 HA 管理员身份；静态脚本不包含账号凭据。
 
-需要沿用 QQ 通知时，保留现有 `notify.json` 和 `notify.token`。服务对每项任务的成功以及第5、10、20次失败使用固定事件编号；通知状态为 `unknown` 时停止自动投递。创建受保护的 `manager-settings.json`，填写 `{"ha_url":"https://你的HA地址"}` 后，学校触发短信时会通过 QQ 提醒到 HA 的“签到”页面填写。验证码实际发送后十分钟有效，仅允许首次提交，写入数据库前加密，使用后清除。
+QQ通知保留现有 `notify.json` 和 `notify.token`，Robin来源必须是独立的 `lzu-attendance`、scope为`notify`，并部署Robin的签到专用绑定模块。服务对每项任务的成功以及第5、10、20次失败使用固定事件编号；通知状态为`unknown`时停止自动投递。原有本人通过受保护`config.json`中的账号名称识别，继续使用本人QQ；其他用户独立绑定，未绑定时通知暂停。新建用户可选择“绑定Robin提醒”，在QQ私聊发送十分钟有效的一次性`/bind 六位码`。
+
+通知的用户、绑定版本与接收人首次接受时固定；重新绑定不会把旧的未知投递改投新QQ。Robin拒绝其他来源访问签到绑定接口，其他QQ的普通消息、附件和个人业务控制不会进入本人通道。
+
+验证码沿用`config.json`的`otp_service_url`和`otp.token`访问下述公开网关。每个用户和登录操作有独立请求，创建前保存关联记录；公开页面无需HA登录，只接受一次验证码提交。学校认证链及登录查询确认后发送`verified`确认，链接立即返回410并清除代码；失败、取消、过期及进程中断均撤销。HA仅提供专属链接，同一操作不能再从HA验证码接口输入。QQ通知按对应用户路由，临时链接不会发送到其他账号。
 
 日常检查：
 

@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 from aiohttp import web
@@ -10,6 +11,7 @@ DOMAIN = 'lzu_attendance'
 
 async def async_setup(hass, config):
     options = config[DOMAIN]
+    resource_version = hashlib.sha256((Path(__file__).parent / 'www/panel.js').read_bytes()).hexdigest()[:16]
     hass.http.register_view(AttendanceView(hass, options))
     await hass.http.async_register_static_paths([
         StaticPathConfig('/lzu_attendance_static', str(Path(__file__).parent / 'www'), False)
@@ -17,7 +19,7 @@ async def async_setup(hass, config):
     await panel_custom.async_register_panel(
         hass, frontend_url_path='attendance', webcomponent_name='lzu-attendance-panel',
         sidebar_title='签到', sidebar_icon='mdi:clipboard-check-outline',
-        module_url='/lzu_attendance_static/panel.js?v=1', require_admin=True)
+        module_url=f'/lzu_attendance_static/panel.js?v={resource_version}', require_admin=True)
     return True
 
 

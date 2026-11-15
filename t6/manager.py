@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 import manager_store as store
+import manager_notifications as notifications_api
 from secure_store import protect
 
 TZ = timezone(timedelta(hours=8))
@@ -65,8 +66,7 @@ def finish_scheduled(conn, op):
         event = f"lzu-attendance:{job['id']}:{day}:" + ('success' if success else f"failure:{row['attempts']}")
         payload = {'event_id': event, 'title': '签到成功' if success else '签到失败',
                    'text': f"{user['alias']} · {job['name']} · {day} · 第 {row['attempts']} 次：{op['message']}"}
-        conn.execute('INSERT OR IGNORE INTO notices VALUES(?,?,?)',
-                     (event, json.dumps(payload, ensure_ascii=False), 'pending'))
+        notifications_api.queue_notice(conn,job['user_id'],payload)
     conn.execute('UPDATE operations SET scheduled=0 WHERE id=?', (op['id'],))
 
 
@@ -106,21 +106,7 @@ def advance():
 
 
 def deliver_notices():
-    if not (store.ROOT / 'notify.json').exists():
-        return
-    with store.connect() as conn:
-        rows = conn.execute("SELECT * FROM notices WHERE status='pending'").fetchall()
-    config = json.loads((store.ROOT / 'notify.json').read_text('utf-8'))
-    token = (store.ROOT / 'notify.token').read_text('utf-8').strip()
-    for row in rows:
-        request = urllib.request.Request(config['url'], data=row['payload'].encode(),
-                                         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            result = json.load(response)
-        if result.get('status') not in ('sent', 'unknown'):
-            raise ValueError('通知接口状态无效')
-        with store.connect() as conn:
-            conn.execute('UPDATE notices SET status=? WHERE event_id=?', (result['status'], row['event_id']))
+    notifications_api.deliver()
 
 
 async def supervise():
@@ -135,7 +121,7 @@ async def notifications():
         process = await asyncio.create_subprocess_exec(sys.executable, str(store.ROOT / 'manager.py'), '--notify',
                                                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await process.wait()
-        await asyncio.sleep(60)
+        await asyncio.sleep(5)
 
 
 @asynccontextmanager
@@ -193,7 +179,7 @@ async def privacy(request: Request, call_next):
 
 class Action(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
-    action: Literal['create_user', 'login', 'code', 'detect', 'refresh', 'locate', 'configure', 'trial', 'run', 'check', 'toggle', 'alias']
+    action: Literal['create_user', 'login', 'code', 'detect', 'refresh', 'locate', 'bind', 'binding_status', 'unbind', 'configure', 'trial', 'run', 'check', 'toggle', 'alias']
     user_id: str = ''
     job_id: str = ''
     operation_id: str = ''
@@ -210,6 +196,7 @@ class Action(BaseModel):
     located_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     address: str = Field(default='', max_length=512)
     enabled: bool = False
+    notify_bind: bool = True
 
 
 @app.get('/api/state', dependencies=[Depends(auth)])
@@ -219,11 +206,16 @@ def state():
         jobs = [dict(row) for row in conn.execute('SELECT jobs.*,job_windows.school_begin,job_windows.school_end FROM jobs LEFT JOIN job_windows ON job_windows.job_id=jobs.id ORDER BY jobs.rowid')]
         operations = [dict(row) for row in conn.execute("SELECT id,user_id,job_id,action,state,message,created,expires,result FROM operations WHERE id IN (SELECT id FROM operations ORDER BY created DESC LIMIT 100) OR state IN ('queued','running','waiting_sms','sms_received') ORDER BY created DESC")]
         days = [dict(row) for row in conn.execute('SELECT * FROM days WHERE day=?', (now().date().isoformat(),))]
+        routes=notifications_api.public_routes(conn)
+        challenges={row['operation_id']:dict(row) for row in conn.execute("SELECT * FROM operation_challenges WHERE state='active' AND expires>?",(time.time(),))}
+    for user in users:
+        user['notification']=routes[user['id']]
     for job in jobs:
         job['location'] = json.loads(job['location'])
         job['weekdays'] = json.loads(job['weekdays'])
     for op in operations:
         op['result'] = json.loads(op['result']) if op['result'] else None
+        op['verification_url']=challenges[op['id']]['verification_url'] if op['id'] in challenges else None
     return {'users': users, 'jobs': jobs, 'operations': operations, 'days': days, 'timezone': 'Asia/Shanghai'}
 
 
@@ -248,6 +240,19 @@ def task_ids(link):
 
 @app.post('/api/action', dependencies=[Depends(auth)])
 def action(payload: Action):
+    if payload.action in ('bind','binding_status','unbind'):
+        with store.connect() as conn:
+            store.get_user(conn,payload.user_id)
+            if notifications_api.route(conn,payload.user_id)['mode']=='owner':
+                raise HTTPException(409,'本人提醒沿用原有绑定')
+        if payload.action=='bind':
+            return notifications_api.create_binding(payload.user_id)
+        if payload.action=='binding_status':
+            return notifications_api.check_binding(payload.user_id)
+        notifications_api.robin('/api/attendance/bindings/'+payload.user_id,method='DELETE')
+        with store.connect() as conn:
+            conn.execute("UPDATE user_routes SET mode='off',bound=0,version=NULL,code=NULL,expires=NULL WHERE user_id=?",(payload.user_id,))
+        return {'ok':True}
     if payload.action == 'locate':
         if payload.accuracy is None or payload.located_at is None:
             raise HTTPException(422, '定位结果缺少精度或采集时间，请重新获取当前位置')
@@ -266,8 +271,13 @@ def action(payload: Action):
             conn.execute('INSERT INTO users VALUES(?,?,?,?,0)',
                          (user_id, payload.alias.strip(), payload.username.strip(), protect(payload.password)))
             store.user_dir(user_id).mkdir(mode=0o700, parents=True)
+            conn.execute('INSERT INTO user_routes(user_id,mode) VALUES(?,?)',(user_id,'recipient' if payload.notify_bind else 'off'))
+            if payload.notify_bind:
+                return {'user_id':user_id,'binding_required':True}
             return {'user_id': user_id, **enqueue(conn, user_id, 'login')}
         if payload.action == 'code':
+            if conn.execute('SELECT 1 FROM operation_challenges WHERE operation_id=?',(payload.operation_id,)).fetchone():
+                raise HTTPException(409,'请使用此用户专属的临时链接填写验证码')
             if not payload.code.isascii() or not payload.code.isdigit() or not 4 <= len(payload.code) <= 8:
                 raise HTTPException(422, '请填写四至八位数字验证码')
             changed = conn.execute("UPDATE operations SET state='sms_received',code=? WHERE id=? AND state='waiting_sms' AND expires>? AND code IS NULL",

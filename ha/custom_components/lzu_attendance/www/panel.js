@@ -21,6 +21,9 @@ class AttendancePanel extends HTMLElement {
     this.data = null;
     this.activeOperation = null;
     this.locationRequest = 0;
+    this.bindingRequest = 0;
+    this.activeBinding = null;
+    this.bindingChecking = false;
     this.shadowRoot.innerHTML = `<style>${style}</style><main><header><div class="row"><button class="menu" aria-label="打开侧边栏">☰</button><h1>签到</h1></div><button id="new-user" class="primary">新建用户</button></header><p id="global-status" class="status" role="status" aria-live="polite"></p><div id="users"><p>正在读取用户</p></div></main><dialog aria-labelledby="dialog-title"><h2 id="dialog-title"></h2><p class="step" id="step"></p><div id="dialog-body"></div><p class="status" id="dialog-status" role="status" aria-live="polite"></p><div class="actions"><button id="close">关闭</button><button id="next" class="primary"></button></div></dialog>`;
     this.$('.menu').onclick = () => this.dispatchEvent(new Event('hass-toggle-menu', {bubbles:true,composed:true}));
     this.$('#new-user').onclick = () => this.openNew();
@@ -28,6 +31,8 @@ class AttendancePanel extends HTMLElement {
     this.$('dialog').addEventListener('close', () => {
       this.activeOperation = null;
       this.locationRequest++;
+      this.bindingRequest++;
+      this.activeBinding = null;
       const opener = this.dialogOpener ? this.$(`[data-focus="${CSS.escape(this.dialogOpener)}"]`) : null;
       (opener || this.$('#new-user')).focus();
     });
@@ -82,6 +87,7 @@ class AttendancePanel extends HTMLElement {
       this.data = await this._hass.callApi('GET','lzu_attendance');
       this.renderUsers();
       this.renderOperation();
+      if (this.activeBinding && !this.bindingChecking && Date.now()-this.activeBinding.checkedAt>5000) await this.checkBinding();
     } finally { this.refreshing = false; }
   }
 
@@ -96,7 +102,8 @@ class AttendancePanel extends HTMLElement {
       const op = this.data.operations.find(op => op.user_id === user.id);
       const busy = op && busyStates.includes(op.state);
       const jobs = this.data.jobs.filter(job => job.user_id === user.id);
-      return `<section><div class="row user-head"><div><h2>${escape(user.alias)}</h2><p class="meta">${escape(user.username)} · ${user.ready ? '已验证' : '待验证'}</p></div><div class="row"><button data-action="alias" data-user="${user.id}">修改别名</button><button data-action="login" data-user="${user.id}">${busy ? '查看进度' : '登录验证'}</button><button data-action="add" data-user="${user.id}" ${!user.ready || busy ? 'disabled' : ''}>添加任务</button></div></div>${op ? `<p class="status ${op.state === 'failed' ? 'error' : ''}">${escape(op.message || '正在等待执行')}</p>` : ''}${jobs.map(job => {
+      const reminder=user.notification.mode==='owner'?'本人提醒':user.notification.bound?'Robin提醒已绑定':user.notification.mode==='recipient'?'Robin提醒待绑定':'提醒未启用';
+      return `<section><div class="row user-head"><div><h2>${escape(user.alias)}</h2><p class="meta">${escape(user.username)} · ${user.ready ? '已验证' : '待验证'} · ${reminder}</p></div><div class="row"><button data-action="alias" data-user="${user.id}">修改别名</button>${user.notification.mode!=='owner'?`<button data-action="bind" data-user="${user.id}">${user.notification.bound?'管理Robin提醒':'绑定Robin提醒'}</button>`:''}<button data-action="login" data-user="${user.id}">${busy ? '查看进度' : '登录验证'}</button><button data-action="add" data-user="${user.id}" ${!user.ready || busy ? 'disabled' : ''}>添加任务</button></div></div>${op ? `<p class="status ${op.state === 'failed' ? 'error' : ''}">${escape(op.message || '正在等待执行')}</p>` : ''}${jobs.map(job => {
         const latest = this.data.operations.find(op => op.job_id === job.id && ['run','trial','check'].includes(op.action));
         const day = this.data.days.find(day => day.job_id === job.id);
         const weekday = job.weekdays.length === 7 ? '每天' : job.weekdays.map(n => '周' + ['一','二','三','四','五','六','日'][n-1]).join('、');
@@ -113,6 +120,7 @@ class AttendancePanel extends HTMLElement {
       if (action === 'add') this.openLink(user);
       if (action === 'settings') this.openSettings(job);
       if (action === 'alias') this.openAlias(user);
+      if (action === 'bind') await this.openBinding(user);
       if (action === 'login') {
         const pending = this.data.operations.find(op => op.user_id === user.id && busyStates.includes(op.state));
         if (pending) this.watch(pending.id, user.id, pending.action);
@@ -166,11 +174,46 @@ class AttendancePanel extends HTMLElement {
 
   openNew() {
     this.activeOperation = null;
-    this.dialog('新建用户','账号信息',`<form><label for="alias">别名</label><input id="alias" required maxlength="80" autocomplete="off"><label for="username">账号名称</label><input id="username" required maxlength="80" autocomplete="username"><label for="password">密码</label><input id="password" required type="password" maxlength="512" autocomplete="new-password"><button class="sr" type="submit" tabindex="-1">请求验证码</button></form>`,'请求验证码', async () => {
-      const result = await this.call({action:'create_user',alias:this.$('#alias').value,username:this.$('#username').value,password:this.$('#password').value});
+    this.dialog('新建用户','账号信息',`<form><label for="alias">别名</label><input id="alias" required maxlength="80" autocomplete="off"><label for="username">账号名称</label><input id="username" required maxlength="80" autocomplete="username"><label for="password">密码</label><input id="password" required type="password" maxlength="512" autocomplete="new-password"><label class="check"><input id="notify-bind" type="checkbox" checked>绑定Robin提醒</label><button class="sr" type="submit" tabindex="-1">下一步</button></form>`,'下一步', async () => {
+      const result = await this.call({action:'create_user',alias:this.$('#alias').value,username:this.$('#username').value,password:this.$('#password').value,notify_bind:this.$('#notify-bind').checked});
       this.$('#password').value = '';
-      this.watch(result.operation_id,result.user_id,'login');
+      if(result.binding_required){await this.refresh();await this.openBinding(this.data.users.find(user=>user.id===result.user_id),true)}
+      else this.watch(result.operation_id,result.user_id,'login');
     });
+  }
+
+  async openBinding(user,continueLogin=false,regenerate=false) {
+    this.activeOperation=null;
+    this.activeBinding=null;
+    const request=++this.bindingRequest;
+    if(user.notification.bound&&!regenerate&&!user.notification.code){
+      this.dialog('Robin提醒',user.alias,'<p>此用户的签到提醒与验证码链接已独立发送到绑定的QQ。</p><button id="unbind" type="button">解除绑定</button><p class="meta">解除后停止发送提醒，重新接收需要再次绑定。</p>','重新生成绑定码',async()=>this.openBinding(user,continueLogin,true));
+      this.$('#unbind').onclick=()=>this.dialog('解除Robin绑定',user.alias,'<p>解除后此账号停止接收签到提醒和验证码链接。</p>','解除绑定',async()=>{await this.call({action:'unbind',user_id:user.id});this.$('dialog').close();await this.refresh()});
+      return;
+    }
+    this.dialog('绑定Robin提醒',user.alias,'<p>正在生成绑定码</p>','',async()=>{});
+    const value=!regenerate&&user.notification.code?{code:user.notification.code,expires_at:user.notification.expires_at}:await this.call({action:'bind',user_id:user.id});
+    if(request!==this.bindingRequest||!this.$('dialog').open)return;
+    this.activeBinding={userId:user.id,continueLogin,checkedAt:Date.now(),expires:value.expires_at};
+    this.dialog('绑定Robin提醒',user.alias,`<p>在QQ添加Robin机器人后，私聊发送：</p><input id="binding-code" aria-label="绑定指令" readonly value="/bind ${escape(value.code)}"><p class="meta">绑定码十分钟有效，仅可使用一次。此绑定仅接收对应的签到提醒与验证码链接。</p><button id="regenerate-binding" type="button">重新生成绑定码</button>`,'检查绑定',async()=>this.checkBinding());
+    this.$('#regenerate-binding').onclick=()=>this.execute(()=>this.openBinding(user,continueLogin,true));
+  }
+
+  async checkBinding() {
+    if(!this.activeBinding||this.bindingChecking)return;
+    const active=this.activeBinding;
+    const request=this.bindingRequest;
+    active.checkedAt=Date.now();
+    this.bindingChecking=true;
+    try{
+      const result=await this.call({action:'binding_status',user_id:active.userId});
+      if(this.activeBinding!==active||!this.$('dialog').open)return;
+      if(result.bound&&!result.pending){
+        this.activeBinding=null;
+        if(active.continueLogin){const login=await this.call({action:'login',user_id:active.userId});if(request===this.bindingRequest&&this.$('dialog').open)this.watch(login.operation_id,active.userId,'login')}
+        else{this.$('#dialog-status').textContent='Robin提醒已绑定';this.$('#next').hidden=true}
+      }else this.$('#dialog-status').textContent=Date.now()/1000>=active.expires?'绑定码已过期，请重新生成':'等待对方在QQ发送绑定指令';
+    }finally{this.bindingChecking=false}
   }
 
   openLogin(user) {
@@ -280,12 +323,7 @@ class AttendancePanel extends HTMLElement {
     active.shownState = op.state;
     const user = this.data.users.find(user => user.id === active.userId);
     if (op.state === 'waiting_sms') {
-      this.dialog('短信验证',user.alias,'<form><label for="code">短信验证码</label><input id="code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4,8}" minlength="4" maxlength="8"></form>','验证',async () => {
-        await this.call({action:'code',operation_id:op.id,code:this.$('#code').value});
-        this.$('#code').value = '';
-        this.$('#next').hidden = true;
-        this.$('#dialog-body').textContent = '正在验证短信';
-      });
+      this.dialog('短信验证',user.alias,op.verification_url?`<p>专属临时链接已按此用户的提醒设置发送，填写后程序继续登录。</p><p><a href="${escape(op.verification_url)}" target="_blank" rel="noopener noreferrer">打开验证码填写页</a></p><p class="meta">无需登录HA，十分钟有效。学校登录验证完成后链接失效。</p>`:'<p>正在建立专属验证码填写入口</p>','',async()=>{});
     } else if (op.state === 'success') {
       this.activeOperation = null;
       if (active.action === 'login') this.openLink(user);

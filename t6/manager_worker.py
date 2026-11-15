@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,7 +30,7 @@ def main():
     store.write_config(user, job)
     import attendance
     import lzu_api as api
-    from secure_store import unprotect
+    import manager_notifications as notifications
 
     def failure(exc_type, exc, traceback):
         if isinstance(exc, attendance.StopRun):
@@ -42,32 +43,37 @@ def main():
         else:
             update(operation_id, 'failed', '学校操作失败，请核实账号、链接和网络（' + exc_type.__name__ + '）')
         print('学校操作终止：' + exc_type.__name__, file=sys.stderr)
+        notifications.close_challenge(operation_id,'failed')
 
     sys.excepthook = failure
     saved = False
 
     def otp(session_id):
         expires = time.time() + 600
-        update(operation_id, 'waiting_sms', '验证码已发送，请在十分钟内填写')
+        request_id=hashlib.sha256((user['id']+'\0'+operation_id+'\0'+session_id).encode()).hexdigest()
         with store.connect() as conn:
-            conn.execute('UPDATE operations SET expires=? WHERE id=?', (expires, operation_id))
-            settings = store.ROOT / 'manager-settings.json'
-            if settings.exists():
-                url = json.loads(settings.read_text('utf-8'))['ha_url'].rstrip('/') + '/attendance'
-                payload = {'event_id': 'lzu-attendance:sms:' + operation_id, 'title': '签到需要短信验证',
-                           'text': user['alias'] + '：学校已发送短信，请在十分钟内打开 Home Assistant 的签到页面填写。' + url}
-                conn.execute('INSERT OR IGNORE INTO notices VALUES(?,?,?)',
-                             (payload['event_id'], json.dumps(payload, ensure_ascii=False), 'pending'))
+            conn.execute("INSERT INTO operation_challenges VALUES(?,?,?,'',?,'creating')",(operation_id,user['id'],request_id,expires))
+        challenge=notifications.otp_api('/api/requests',{'request_id':request_id,'subject':user['id'],'operation_id':operation_id})
+        expires=min(expires,challenge['expires_at'])
+        with store.connect() as conn:
+            changed=conn.execute("UPDATE operation_challenges SET verification_url=?,expires=?,state='active' WHERE operation_id=? AND state='creating'",(challenge['verification_url'],expires,operation_id))
+            if changed.rowcount!=1:
+                raise api.AuthError('登录验证请求已结束')
+            conn.execute('UPDATE operations SET expires=? WHERE id=?',(expires,operation_id))
+            payload={'event_id':'lzu-attendance:sms:'+operation_id,'title':'签到需要短信验证',
+                     'text':user['alias']+'：学校已发送短信，请在十分钟内打开专属临时链接填写验证码。登录验证完成后链接立即失效。\n\n'+challenge['verification_url']}
+            notifications.queue_notice(conn,user['id'],payload,expires)
+        update(operation_id,'waiting_sms','验证码已发送，请使用此用户专属临时链接填写')
         while time.time() < expires:
             with store.connect() as conn:
-                row = conn.execute('SELECT state,code FROM operations WHERE id=?', (operation_id,)).fetchone()
-                if row['state'] == 'sms_received':
-                    value = unprotect(row['code'])
-                    conn.execute("UPDATE operations SET state='running',code=NULL WHERE id=?", (operation_id,))
-                    return value
+                row = conn.execute('SELECT state FROM operations WHERE id=?', (operation_id,)).fetchone()
                 if row['state'] != 'waiting_sms':
                     raise api.AuthError('登录验证已终止')
-            time.sleep(1)
+            result=notifications.otp_api('/api/requests/'+request_id)
+            if result['state']=='received':
+                update(operation_id,'running','验证码已收到，正在核实学校登录')
+                return result['code']
+            time.sleep(2)
         raise api.AuthError('登录验证已过期')
 
     api.OTP_PROVIDER = otp
@@ -77,8 +83,13 @@ def main():
         fdm = api.FdmClient()
         cfg = attendance.read_config(require_location=op['action'] in ('run', 'trial'))
         attendance.ensure_auth(fdm, cfg)
-        if op['action'] == 'login':
+        with store.connect() as conn:
+            challenge=conn.execute("SELECT 1 FROM operation_challenges WHERE operation_id=? AND state='active'",(operation_id,)).fetchone()
+        if op['action']=='login' or challenge:
             fdm.interval_months()
+        if challenge:
+            notifications.close_challenge(operation_id,'verified')
+        if op['action'] == 'login':
             with store.connect() as conn:
                 conn.execute('UPDATE users SET ready=1 WHERE id=?', (user['id'],))
             update(operation_id, 'success', '学校登录验证通过')
