@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as clock_time, timedelta, timezone
 import fcntl
 import json
 import os
@@ -29,6 +29,13 @@ PROCESSES = {}
 
 def now():
     return datetime.now(TZ)
+
+
+def in_schedule(job, stamp):
+    return (stamp.date().isoformat() >= job['start_date']
+            and stamp.isoweekday() in json.loads(job['weekdays'])
+            and clock_time.fromisoformat(job['run_at']) <= stamp.time().replace(tzinfo=None)
+            < clock_time.fromisoformat(job['deadline']))
 
 
 def require_idle(conn, user_id):
@@ -76,11 +83,9 @@ def advance():
             finish_scheduled(conn, op)
         conn.execute('UPDATE operations SET code=NULL WHERE expires<?', (time.time(),))
         stamp = now()
-        for row in conn.execute('SELECT jobs.* FROM jobs JOIN users ON users.id=jobs.user_id WHERE jobs.enabled=1 AND jobs.saved=1 AND users.ready=1').fetchall():
+        for row in conn.execute('SELECT jobs.* FROM jobs JOIN users ON users.id=jobs.user_id JOIN job_windows ON job_windows.job_id=jobs.id WHERE jobs.enabled=1 AND jobs.saved=1 AND users.ready=1').fetchall():
             job = dict(row)
-            if stamp.date().isoformat() < job['start_date'] or stamp.isoweekday() not in json.loads(job['weekdays']):
-                continue
-            if not job['run_at'] <= stamp.strftime('%H:%M') < job['deadline']:
+            if not in_schedule(job, stamp):
                 continue
             if conn.execute("SELECT 1 FROM operations WHERE user_id=? AND state IN ('queued','running','waiting_sms','sms_received')", (job['user_id'],)).fetchone():
                 continue
@@ -187,7 +192,7 @@ async def privacy(request: Request, call_next):
 
 class Action(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
-    action: Literal['create_user', 'login', 'code', 'detect', 'configure', 'trial', 'run', 'check', 'toggle', 'alias']
+    action: Literal['create_user', 'login', 'code', 'detect', 'refresh', 'configure', 'trial', 'run', 'check', 'toggle', 'alias']
     user_id: str = ''
     job_id: str = ''
     operation_id: str = ''
@@ -196,8 +201,6 @@ class Action(BaseModel):
     password: str = Field(default='', max_length=512)
     code: str = Field(default='', max_length=8)
     link: str = Field(default='', max_length=4096)
-    run_at: str = '21:05'
-    deadline: str = '23:50'
     start_date: str = ''
     weekdays: list[int] = Field(default_factory=lambda: list(range(1, 8)))
     longitude: float = 0
@@ -210,7 +213,7 @@ class Action(BaseModel):
 def state():
     with store.connect() as conn:
         users = [dict(row) for row in conn.execute('SELECT id,alias,username,ready FROM users ORDER BY rowid')]
-        jobs = [dict(row) for row in conn.execute('SELECT * FROM jobs ORDER BY rowid')]
+        jobs = [dict(row) for row in conn.execute('SELECT jobs.*,job_windows.school_begin,job_windows.school_end FROM jobs LEFT JOIN job_windows ON job_windows.job_id=jobs.id ORDER BY jobs.rowid')]
         operations = [dict(row) for row in conn.execute("SELECT id,user_id,job_id,action,state,message,created,expires,result FROM operations WHERE id IN (SELECT id FROM operations ORDER BY created DESC LIMIT 100) OR state IN ('queued','running','waiting_sms','sms_received') ORDER BY created DESC")]
         days = [dict(row) for row in conn.execute('SELECT * FROM days WHERE day=?', (now().date().isoformat(),))]
     for job in jobs:
@@ -261,7 +264,7 @@ def action(payload: Action):
             if changed.rowcount != 1:
                 raise HTTPException(409, '验证码填写入口已经过期或已提交')
             return {'ok': True}
-        if payload.action in ('configure', 'trial', 'run', 'check', 'toggle'):
+        if payload.action in ('refresh', 'configure', 'trial', 'run', 'check', 'toggle'):
             job = store.get_job(conn, payload.job_id)
             user = store.get_user(conn, job['user_id'])
         else:
@@ -282,34 +285,33 @@ def action(payload: Action):
             return enqueue(conn, user['id'], 'login')
         if not user['ready']:
             raise HTTPException(409, '请先完成学校登录验证')
+        if payload.action == 'refresh':
+            return enqueue(conn, user['id'], 'detect', job['id'])
         if payload.action == 'detect':
             sign_wid, instance_wid = task_ids(payload.link)
             existing = conn.execute('SELECT * FROM jobs WHERE user_id=? AND sign_wid=?', (user['id'], sign_wid)).fetchone()
-            if existing and existing['saved']:
-                raise HTTPException(409, '此用户已经添加该任务，请在任务列表中管理')
             if existing:
                 conn.execute('UPDATE jobs SET instance_wid=? WHERE id=?', (instance_wid, existing['id']))
                 return {'job_id': existing['id'], **enqueue(conn, user['id'], 'detect', existing['id'])}
             job_id = store.identifier()
             conn.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,0,0)',
-                         (job_id, user['id'], '正在识别', sign_wid, instance_wid, '21:05', '23:50',
+                         (job_id, user['id'], '正在识别', sign_wid, instance_wid, '', '',
                           now().date().isoformat(), json.dumps(list(range(1, 8))), '{}'))
             return {'job_id': job_id, **enqueue(conn, user['id'], 'detect', job_id)}
         if payload.action == 'configure':
-            for value in (payload.run_at, payload.deadline):
-                if datetime.strptime(value, '%H:%M').strftime('%H:%M') != value:
-                    raise HTTPException(422, '时间格式应为 HH:MM')
-            if payload.run_at >= payload.deadline:
-                raise HTTPException(422, '截止时间应晚于执行时间')
-            datetime.strptime(payload.start_date, '%Y-%m-%d')
+            window = conn.execute('SELECT * FROM job_windows WHERE job_id=?', (job['id'],)).fetchone()
+            if window is None:
+                raise HTTPException(409, '请先读取学校任务的起止时间')
+            if datetime.strptime(payload.start_date, '%Y-%m-%d').date().isoformat() != payload.start_date or payload.start_date < window['school_begin'][:10]:
+                raise HTTPException(422, '开始日期不能早于学校任务日期')
             if not payload.weekdays or any(day not in range(1, 8) for day in payload.weekdays):
                 raise HTTPException(422, '请选择有效的执行星期')
             if not (-180 <= payload.longitude <= 180 and -90 <= payload.latitude <= 90 and payload.address.strip()):
                 raise HTTPException(422, '请填写实际地址及 GCJ-02 经纬度')
             location = {'longitude': payload.longitude, 'latitude': payload.latitude,
                         'address': payload.address.strip(), 'coordinate_system': 'GCJ-02'}
-            conn.execute('UPDATE jobs SET run_at=?,deadline=?,start_date=?,weekdays=?,location=? WHERE id=?',
-                         (payload.run_at, payload.deadline, payload.start_date, json.dumps(sorted(set(payload.weekdays))),
+            conn.execute('UPDATE jobs SET start_date=?,weekdays=?,location=? WHERE id=?',
+                         (payload.start_date, json.dumps(sorted(set(payload.weekdays))),
                           json.dumps(location, ensure_ascii=False), job['id']))
             return {'ok': True}
         if payload.action == 'toggle':

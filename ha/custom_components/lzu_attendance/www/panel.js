@@ -97,7 +97,8 @@ class AttendancePanel extends HTMLElement {
         const latest = this.data.operations.find(op => op.job_id === job.id && ['run','trial','check'].includes(op.action));
         const day = this.data.days.find(day => day.job_id === job.id);
         const weekday = job.weekdays.length === 7 ? '每天' : job.weekdays.map(n => '周' + ['一','二','三','四','五','六','日'][n-1]).join('、');
-        return `<article class="job"><div class="row job-head"><div class="job-name"><h3>${escape(job.name)}</h3><p class="meta">${escape(weekday)} · ${escape(job.run_at)}–${escape(job.deadline)} · 北京时间${day ? ` · 今日 ${day.attempts} 次` : ''}</p></div><label class="check"><input type="checkbox" data-toggle="${job.id}" aria-label="${escape(job.name)}自动签到" ${job.enabled ? 'checked' : ''} ${busy || !job.saved ? 'disabled' : ''}>自动签到</label></div>${latest ? `<p>${escape(latest.message)}</p>` : ''}<div class="row"><button data-action="settings" data-job="${job.id}" data-focus="settings-${job.id}" ${busy || job.name === '正在识别' ? 'disabled' : ''}>${job.saved ? '任务设置' : '继续配置'}</button><button data-action="check" data-job="${job.id}" ${busy || !job.saved ? 'disabled' : ''}>检查状态</button><button data-action="run" data-job="${job.id}" ${busy || !job.saved ? 'disabled' : ''}>立即签到</button></div></article>`;
+        const schoolTime = job.school_begin ? `${job.school_begin.slice(11,19).replace(/:00$/,'')}–${job.school_end.slice(11,19).replace(/:00$/,'')} · 首次 ${job.run_at}` : '待读取任务时间';
+        return `<article class="job"><div class="row job-head"><div class="job-name"><h3>${escape(job.name)}</h3><p class="meta">${escape(weekday)} · ${escape(schoolTime)} · 北京时间${day ? ` · 今日 ${day.attempts} 次` : ''}</p></div><label class="check"><input type="checkbox" data-toggle="${job.id}" aria-label="${escape(job.name)}自动签到" ${job.enabled ? 'checked' : ''} ${busy || !job.saved ? 'disabled' : ''}>自动签到</label></div>${latest ? `<p>${escape(latest.message)}</p>` : ''}<div class="row"><button data-action="settings" data-job="${job.id}" data-focus="settings-${job.id}" ${busy || job.name === '正在识别' ? 'disabled' : ''}>${job.saved ? '任务设置' : '继续配置'}</button><button data-action="refresh" data-job="${job.id}" ${busy ? 'disabled' : ''}>读取任务信息</button><button data-action="check" data-job="${job.id}" ${busy || !job.saved ? 'disabled' : ''}>检查状态</button><button data-action="run" data-job="${job.id}" ${busy || !job.saved ? 'disabled' : ''}>立即签到</button></div></article>`;
       }).join('')}</section>`;
     }).join('') : '<p class="empty">还没有用户</p>';
     users.querySelectorAll('[data-action]').forEach(button => {
@@ -114,9 +115,9 @@ class AttendancePanel extends HTMLElement {
         if (pending) this.watch(pending.id, user.id, pending.action);
         else this.openLogin(user);
       }
-      if (['run','check'].includes(action)) {
+      if (['run','check','refresh'].includes(action)) {
         const result = await this.call({action,job_id:job.id});
-        this.watch(result.operation_id,job.user_id,action);
+        this.watch(result.operation_id,job.user_id,action === 'refresh' ? 'detect' : action);
       }
       });
     });
@@ -180,7 +181,7 @@ class AttendancePanel extends HTMLElement {
 
   openLink(user) {
     this.activeOperation = null;
-    this.dialog('添加任务',user.alias,`<form><label for="link">近期辅导猫签到链接</label><textarea id="link" required maxlength="4096" autocomplete="off"></textarea></form>`,'检测任务名称',async () => {
+    this.dialog('添加任务',user.alias,`<form><label for="link">近期辅导猫签到链接</label><textarea id="link" required maxlength="4096" autocomplete="off"></textarea></form>`,'读取任务信息',async () => {
       const result = await this.call({action:'detect',user_id:user.id,link:this.$('#link').value.trim()});
       this.$('#link').value = '';
       this.watch(result.operation_id,user.id,'detect',result.job_id);
@@ -190,9 +191,9 @@ class AttendancePanel extends HTMLElement {
   openSettings(job) {
     this.activeOperation = null;
     const loc = job.location;
-    this.dialog(job.name,'签到设置 · 北京时间',`<form><div class="grid"><div><label for="run-at">执行时间</label><input id="run-at" type="time" required value="${escape(job.run_at)}"></div><div><label for="deadline">截止时间</label><input id="deadline" type="time" required value="${escape(job.deadline)}"></div><div class="full"><label for="start-date">开始日期</label><input id="start-date" type="date" required value="${escape(job.start_date)}"></div></div><label>执行星期</label><div class="weekdays">${['一','二','三','四','五','六','日'].map((day,i) => `<label><input type="checkbox" name="weekday" value="${i+1}" ${job.weekdays.includes(i+1) ? 'checked' : ''}>周${day}</label>`).join('')}</div><label for="address">实际签到地址</label><input id="address" required maxlength="512" value="${escape(loc.address || '')}"><div class="grid"><div><label for="longitude">经度（GCJ-02）</label><input id="longitude" required type="number" step="any" min="-180" max="180" value="${escape(loc.longitude ?? '')}"></div><div><label for="latitude">纬度（GCJ-02）</label><input id="latitude" required type="number" step="any" min="-90" max="90" value="${escape(loc.latitude ?? '')}"></div></div><p class="meta">使用高德或腾讯地图的实际位置。每项任务失败后等待五分钟，每天最多二十次。</p></form>`,job.saved ? '保存设置' : '尝试签到并保存',async () => {
+    this.dialog(job.name,'签到设置 · 北京时间',`<form><div class="grid"><div><label for="school-begin">任务开始时间</label><input id="school-begin" readonly value="${escape(job.school_begin ? job.school_begin.replace('T',' ').slice(0,19) : '待读取')}"></div><div><label for="school-end">任务结束时间</label><input id="school-end" readonly value="${escape(job.school_end ? job.school_end.replace('T',' ').slice(0,19) : '待读取')}"></div><div><label for="run-at">首次尝试时间</label><input id="run-at" readonly value="${escape(job.school_begin ? job.run_at : '待读取')}"></div><div><label for="start-date">开始日期</label><input id="start-date" type="date" required value="${escape(job.start_date)}"></div></div><label>执行星期</label><div class="weekdays">${['一','二','三','四','五','六','日'].map((day,i) => `<label><input type="checkbox" name="weekday" value="${i+1}" ${job.weekdays.includes(i+1) ? 'checked' : ''}>周${day}</label>`).join('')}</div><label for="address">实际签到地址</label><input id="address" required maxlength="512" value="${escape(loc.address || '')}"><div class="grid"><div><label for="longitude">经度（GCJ-02）</label><input id="longitude" required type="number" step="any" min="-180" max="180" value="${escape(loc.longitude ?? '')}"></div><div><label for="latitude">纬度（GCJ-02）</label><input id="latitude" required type="number" step="any" min="-90" max="90" value="${escape(loc.latitude ?? '')}"></div></div><p class="meta">任务开始五分钟后首次尝试，任务结束后停止。失败后等待五分钟，每天最多二十次。位置使用高德或腾讯地图 GCJ-02 坐标。</p></form>`,job.saved ? '保存设置' : '尝试签到并保存',async () => {
       const weekdays = [...this.shadowRoot.querySelectorAll('[name=weekday]:checked')].map(input => Number(input.value));
-      await this.call({action:'configure',job_id:job.id,run_at:this.$('#run-at').value,deadline:this.$('#deadline').value,start_date:this.$('#start-date').value,weekdays,address:this.$('#address').value,longitude:Number(this.$('#longitude').value),latitude:Number(this.$('#latitude').value)});
+      await this.call({action:'configure',job_id:job.id,start_date:this.$('#start-date').value,weekdays,address:this.$('#address').value,longitude:Number(this.$('#longitude').value),latitude:Number(this.$('#latitude').value)});
       if (job.saved) { this.$('dialog').close(); await this.refresh(); }
       else {
         const result = await this.call({action:'trial',job_id:job.id});
