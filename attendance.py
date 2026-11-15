@@ -1,6 +1,6 @@
 """Exact-task attendance runner with Beijing scheduling and server verification."""
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as clock_time, timedelta, timezone
 import hashlib
 import json
 import math
@@ -73,10 +73,10 @@ def read_config(require_location=True):
 def schedule_gate(cfg, stamp):
     if stamp.date().isoformat() < cfg['start_date']:
         return 'not_started'
-    hhmm = stamp.strftime('%H:%M')
-    if hhmm < cfg['run_at']:
+    current_time = stamp.time().replace(tzinfo=None)
+    if current_time < clock_time.fromisoformat(cfg['run_at']):
         return 'before_window'
-    if hhmm >= cfg['deadline']:
+    if current_time >= clock_time.fromisoformat(cfg['deadline']):
         return 'window_closed'
     return None
 

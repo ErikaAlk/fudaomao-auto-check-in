@@ -14,6 +14,7 @@ def import_legacy():
     fdm = api.FdmClient()
     attendance.ensure_auth(fdm, cfg)
     category, task, begin, end = attendance.select_target(fdm.running_tasks(), attendance.now_bj())
+    window = store.task_window(fdm.detail(str(task['signInstanceWid']), str(task['signWid'])))
     store.initialize()
     with store.connect() as conn:
         if conn.execute('SELECT 1 FROM users WHERE username=?', (cfg['username'],)).fetchone():
@@ -25,6 +26,7 @@ def import_legacy():
                      (job_id, user_id, cfg['target_task_name'], str(task['signWid']), str(task['signInstanceWid']),
                       cfg['run_at'], cfg['deadline'], cfg['start_date'], json.dumps(list(range(1, 8))),
                       json.dumps(cfg['location'], ensure_ascii=False)))
+        store.save_window(conn, job_id, window)
         account = store.user_dir(user_id)
         account.mkdir(mode=0o700)
         for name in ('session.json', 'cookies.txt'):

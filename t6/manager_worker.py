@@ -37,6 +37,8 @@ def main():
             update(operation_id, 'failed', prefix + exc.message, {'state': exc.state, 'saved': saved})
         elif isinstance(exc, api.AuthError):
             update(operation_id, 'failed', '学校登录验证失效，请重新登录')
+        elif isinstance(exc, store.TaskWindowError):
+            update(operation_id, 'failed', str(exc))
         else:
             update(operation_id, 'failed', '学校操作失败，请核实账号、链接和网络（' + exc_type.__name__ + '）')
         print('学校操作终止：' + exc_type.__name__, file=sys.stderr)
@@ -85,20 +87,27 @@ def main():
             name = detail.get('taskName')
             if not isinstance(name, str) or not name.strip():
                 raise ValueError('学校没有返回任务名称，请检查签到链接')
+            window = store.task_window(detail)
             # 任务绑定长期任务编号，每日查询时同时校验名称和编号。
             with store.connect() as conn:
                 conn.execute('UPDATE jobs SET name=? WHERE id=?', (name, job['id']))
+                store.save_window(conn, job['id'], window)
             result = {'name': name, 'sign_mode': str(detail.get('signMode', '')),
-                      'photo_required': str(detail.get('isPhoto', '')) not in ('0', 'False', 'false')}
-            update(operation_id, 'success', '任务已识别', result)
+                      'photo_required': str(detail.get('isPhoto', '')) not in ('0', 'False', 'false'), **window}
+            update(operation_id, 'success', '任务名称与起止时间已识别', result)
         else:
             if op['action'] == 'trial':
                 detail = fdm.detail(job['instance_wid'], job['sign_wid'])
+                window = store.task_window(detail)
                 if str(detail.get('signMode', '')) != '0' or str(detail.get('isPhoto', '')) not in ('0', 'False', 'false'):
                     raise attendance.StopRun('unsupported_mode', '此任务要求拍照或其他签到方式，请在学校客户端完成')
                 attendance.validate_location(detail, attendance.school_location(cfg['location']))
                 with store.connect() as conn:
+                    store.save_window(conn, job['id'], window)
                     conn.execute('UPDATE jobs SET saved=1,enabled=1 WHERE id=?', (job['id'],))
+                    job = store.get_job(conn, job['id'])
+                store.write_config(user, job)
+                cfg = attendance.read_config()
                 saved = True
             # 每日名称匹配完成后，还要确认学校返回的长期任务编号。
             category, task, begin, end = attendance.query_target(fdm, attendance.now_bj())

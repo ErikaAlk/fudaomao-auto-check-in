@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -54,7 +55,35 @@ def initialize():
             CREATE TABLE IF NOT EXISTS notices (
                 event_id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS job_windows (
+                job_id TEXT PRIMARY KEY, school_begin TEXT NOT NULL, school_end TEXT NOT NULL
+            );
         ''')
+
+
+class TaskWindowError(ValueError):
+    pass
+
+
+def task_window(detail):
+    zone = timezone(timedelta(hours=8))
+    begin = datetime.fromisoformat(detail['singleTaskBeginTime']).replace(tzinfo=zone)
+    end = datetime.fromisoformat(detail['singleTaskEndTime']).replace(tzinfo=zone)
+    first = begin + timedelta(minutes=5)
+    if end <= first:
+        raise TaskWindowError('任务开始五分钟后已经达到结束时间，无法安排自动签到')
+    if begin.date() != end.date():
+        raise TaskWindowError('此任务跨越日期，需要在学校客户端核实')
+    return {'school_begin': begin.isoformat(), 'school_end': end.isoformat(),
+            'run_at': first.strftime('%H:%M:%S') if first.second else first.strftime('%H:%M'),
+            'deadline': end.strftime('%H:%M:%S') if end.second else end.strftime('%H:%M')}
+
+
+def save_window(conn, job_id, window):
+    conn.execute('INSERT INTO job_windows VALUES(?,?,?) ON CONFLICT(job_id) DO UPDATE SET school_begin=excluded.school_begin,school_end=excluded.school_end',
+                 (job_id, window['school_begin'], window['school_end']))
+    conn.execute('UPDATE jobs SET run_at=?,deadline=?,start_date=MAX(start_date,?) WHERE id=?',
+                 (window['run_at'], window['deadline'], window['school_begin'][:10], job_id))
 
 
 def identifier():
