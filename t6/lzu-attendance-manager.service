@@ -1,0 +1,19 @@
+[Unit]
+Description=辅导猫多账号签到管理与调度
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/lzu-attendance
+ExecStart=%h/.local/share/lzu-attendance/.venv/bin/uvicorn manager:app --host 0.0.0.0 --port 8796 --no-access-log
+Restart=always
+RestartSec=10
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=false
+
+[Install]
+WantedBy=default.target

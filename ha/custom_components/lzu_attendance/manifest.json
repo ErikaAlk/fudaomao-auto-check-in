@@ -1,0 +1,9 @@
+{
+  "domain": "lzu_attendance",
+  "name": "辅导猫签到",
+  "version": "1.0.0",
+  "documentation": "https://github.com/ErikaAlk/fudaomao-auto-check-in",
+  "codeowners": ["@ErikaAlk"],
+  "dependencies": ["http", "frontend", "panel_custom"],
+  "iot_class": "local_polling"
+}

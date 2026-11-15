@@ -1,5 +1,50 @@
 # Linux / T6 部署
 
+## Home Assistant 多账号管理
+
+管理服务运行在 T6，HA 自定义集成提供管理员面板和鉴权代理。浏览器通过 HA 登录访问，管理服务令牌保留在 HA 服务端。界面参数使用 ColorOS 17 设计库的 `2026.09.26-coloros17` 规范，资源在 `ha/custom_components/lzu_attendance/www/`。
+
+将根目录 `attendance.py`、`lzu_api.py`、`secure_store.py` 与本目录 `manager.py`、`manager_store.py`、`manager_worker.py`、`manager_admin.py`、`lzu-attendance-manager.service` 复制到同一个受保护运行目录。使用该目录的虚拟环境安装 `requirements-manager.txt` 中的依赖；从源码目录安装时执行 `运行目录/.venv/bin/pip install -r t6/requirements-manager.txt`。
+
+在运行目录执行：
+
+```bash
+.venv/bin/python manager_admin.py init
+```
+
+该命令创建 `manager.sqlite3`、`accounts/` 和 `manager.token`，权限仅限运行账户。首次使用可以直接从管理页面创建用户。迁入现有单账号时，先停用原有两个定时器与服务，运行 `server_runner.py --flush` 核实原通知，再执行 `manager_admin.py import-legacy`。迁入操作读取当前学校任务，保留密码密文、学校会话、历史提交标记和每日重试状态；完成后由管理服务负责调度，旧定时器保持停用。原文件保留在受保护运行目录。
+
+将 `lzu-attendance-manager.service` 安装到 `~/.config/systemd/user/`，核对运行路径和监听地址，执行 `systemctl --user daemon-reload` 与 `systemctl --user enable --now lzu-attendance-manager.service`。该服务端口为8796，应只允许受信任内网访问，不将它直接发布到互联网。部署需要保持用户 linger 已启用。服务使用单个进程，任务执行由独立子进程承担，同一用户的学校操作串行执行。
+
+将 `ha/custom_components/lzu_attendance/` 复制到 HA 的 `/config/custom_components/lzu_attendance/`。创建只允许管理员读取的 `/config/lzu_attendance_secrets.yaml`：
+
+```yaml
+url: http://T6内网地址:8796
+token: 管理服务manager.token的内容
+```
+
+HA 使用 macvtap 虚拟网卡且管理服务位于同一宿主时，需要检查虚拟机是否能够访问宿主。存在网络隔离时，将上面的 URL 指向可同时访问两端的内网转发服务，限定 HA 来源地址和8796端口，并保持管理令牌鉴权。
+
+在 HA `configuration.yaml` 中添加：
+
+```yaml
+lzu_attendance: !include lzu_attendance_secrets.yaml
+```
+
+检查 HA 配置并重新启动 Core，侧栏出现“签到”。外部访问沿用 HA 的 HTTPS 地址。管理接口和页面入口都要求 HA 管理员身份；静态脚本不包含账号凭据。
+
+需要沿用 QQ 通知时，保留现有 `notify.json` 和 `notify.token`。服务对每项任务的成功以及第5、10、20次失败使用固定事件编号；通知状态为 `unknown` 时停止自动投递。创建受保护的 `manager-settings.json`，填写 `{"ha_url":"https://你的HA地址"}` 后，学校触发短信时会通过 QQ 提醒到 HA 的“签到”页面填写。验证码实际发送后十分钟有效，仅允许首次提交，写入数据库前加密，使用后清除。
+
+日常检查：
+
+```bash
+.venv/bin/python manager_admin.py status
+systemctl --user status lzu-attendance-manager.service
+journalctl --user -u lzu-attendance-manager.service
+```
+
+管理服务关闭 HTTP 访问日志，学校操作进程的原始输出不写入服务日志。异常仅显示操作类型与脱敏原因。服务中断后原操作标为失败，提交标记继续保留；对已经发起但结果未知的实例只回查学校，禁止再次提交。界面关闭不会中断服务器调度。
+
 ## 调度与通知
 
 北京时间每日21:05开始，失败结束后等待300秒，再进行下一次尝试，每天最多20次。第5、10、20次失败发送QQ通知；学校确认签到成功后通知并结束当天执行。SQLite保存计数与通知内容，重启后恢复；中断的检查先只读查询学校。
