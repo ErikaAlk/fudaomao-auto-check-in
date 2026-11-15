@@ -187,7 +187,7 @@ def varied_location(location, variation, clearance):
     radial, bearing = variation['radial_fraction'], variation['bearing_fraction']
     if not all(math.isfinite(value) and 0 <= value < 1 for value in (radial, bearing)):
         raise ValueError('每日位置偏移参数无效')
-    distance = min(49.0, max(0.0, clearance-0.1)) * math.sqrt(radial)
+    distance = min(299.9, max(0.0, clearance-0.1)) * math.sqrt(radial)
     angular = distance / 6371008.8
     direction = bearing * 2 * math.pi
     lat, lng = math.radians(float(location['latitude'])), math.radians(float(location['longitude']))

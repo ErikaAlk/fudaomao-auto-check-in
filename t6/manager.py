@@ -34,10 +34,11 @@ def now():
 
 
 def in_schedule(job, stamp):
+    earliest = datetime.combine(stamp.date(), clock_time.fromisoformat(job['run_at']), TZ) - timedelta(seconds=120)
     return (stamp.date().isoformat() >= job['start_date']
             and stamp.isoweekday() in json.loads(job['weekdays'])
-            and clock_time.fromisoformat(job['run_at']) <= stamp.time().replace(tzinfo=None)
-            < clock_time.fromisoformat(job['deadline']))
+            and earliest <= stamp
+            < datetime.combine(stamp.date(), clock_time.fromisoformat(job['deadline']), TZ))
 
 
 def require_idle(conn, user_id):

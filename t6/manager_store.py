@@ -100,7 +100,7 @@ def identifier():
 
 def daily_variation(conn, job_id, day):
     conn.execute('INSERT OR IGNORE INTO daily_variations VALUES(?,?,?,?,?)',
-                 (job_id, day, secrets.randbelow(121), secrets.randbelow(2**53)/2**53,
+                 (job_id, day, secrets.randbelow(241)-120, secrets.randbelow(2**53)/2**53,
                   secrets.randbelow(2**53)/2**53))
     return dict(conn.execute('SELECT * FROM daily_variations WHERE job_id=? AND day=?',
                              (job_id, day)).fetchone())
