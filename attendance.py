@@ -173,13 +173,29 @@ def validate_location(detail, location):
             radius = float(fence['radius'])
             if not all(math.isfinite(v) for v in (lng, lat, radius)) or radius <= 0:
                 continue
-            valid.append(distance_m(float(location['longitude']), float(location['latitude']), lng, lat) <= radius)
+            valid.append(radius-distance_m(float(location['longitude']), float(location['latitude']), lng, lat))
         except (KeyError, TypeError, ValueError):
             continue
     if not valid:
         raise StopRun('location_rules_unknown', '签到范围格式无法确认，请手动核实', 6)
-    if not any(valid):
+    if max(valid) < 0:
         raise StopRun('outside_fence', '填写的实际位置位于任务范围外，请在企业微信核实', 6)
+    return max(valid)
+
+
+def varied_location(location, variation, clearance):
+    radial, bearing = variation['radial_fraction'], variation['bearing_fraction']
+    if not all(math.isfinite(value) and 0 <= value < 1 for value in (radial, bearing)):
+        raise ValueError('每日位置偏移参数无效')
+    distance = min(49.0, max(0.0, clearance-0.1)) * math.sqrt(radial)
+    angular = distance / 6371008.8
+    direction = bearing * 2 * math.pi
+    lat, lng = math.radians(float(location['latitude'])), math.radians(float(location['longitude']))
+    shifted_lat = math.asin(math.sin(lat)*math.cos(angular)+math.cos(lat)*math.sin(angular)*math.cos(direction))
+    shifted_lng = lng + math.atan2(math.sin(direction)*math.sin(angular)*math.cos(lat),
+                                  math.cos(angular)-math.sin(lat)*math.sin(shifted_lat))
+    return {**location, 'latitude':math.degrees(shifted_lat),
+            'longitude':(math.degrees(shifted_lng)+180)%360-180}
 
 
 def pending_path(stamp):
@@ -210,7 +226,10 @@ def perform(fdm, cfg, stamp, check_only=False):
     if str(detail.get('isPhoto', '')) not in ('0', 'False', 'false'):
         raise StopRun('fresh_photo_required', '此任务要求拍照，请在企业微信拍摄当日照片', 6)
     location = school_location(cfg['location'])
-    validate_location(detail, location)
+    clearance = validate_location(detail, location)
+    if 'location_variation' in cfg:
+        location = varied_location(location, cfg['location_variation'], clearance)
+        validate_location(detail, location)
     if fdm.check_validation():
         raise StopRun('captcha_required', '学校要求验证码，请在企业微信完成签到', 9)
     # Recheck both windows immediately before the only submission call.

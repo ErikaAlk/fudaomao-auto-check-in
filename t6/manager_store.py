@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import secrets
 from pathlib import Path
 import sqlite3
 import uuid
@@ -58,6 +59,11 @@ def initialize():
             CREATE TABLE IF NOT EXISTS job_windows (
                 job_id TEXT PRIMARY KEY, school_begin TEXT NOT NULL, school_end TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS daily_variations (
+                job_id TEXT NOT NULL, day TEXT NOT NULL, delay_seconds INTEGER NOT NULL,
+                radial_fraction REAL NOT NULL, bearing_fraction REAL NOT NULL,
+                PRIMARY KEY(job_id, day)
+            );
         ''')
         from manager_notifications import initialize as initialize_notifications
         initialize_notifications(conn)
@@ -90,6 +96,22 @@ def save_window(conn, job_id, window):
 
 def identifier():
     return uuid.uuid4().hex
+
+
+def daily_variation(conn, job_id, day):
+    conn.execute('INSERT OR IGNORE INTO daily_variations VALUES(?,?,?,?,?)',
+                 (job_id, day, secrets.randbelow(121), secrets.randbelow(2**53)/2**53,
+                  secrets.randbelow(2**53)/2**53))
+    return dict(conn.execute('SELECT * FROM daily_variations WHERE job_id=? AND day=?',
+                             (job_id, day)).fetchone())
+
+
+def varied_start(job, day, variation):
+    zone = timezone(timedelta(hours=8))
+    first = datetime.fromisoformat(day+'T'+job['run_at']).replace(tzinfo=zone)
+    end = datetime.fromisoformat(day+'T'+job['deadline']).replace(tzinfo=zone)
+    delay = min(variation['delay_seconds'], max(0, int((end-first).total_seconds())-5))
+    return first + timedelta(seconds=delay)
 
 
 def user_dir(user_id):
