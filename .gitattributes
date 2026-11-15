@@ -1,0 +1,11 @@
+*.py text eol=lf
+*.pyw text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+*.conf text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.cmd text eol=crlf
+*.example text eol=lf
+.gitattributes text eol=lf

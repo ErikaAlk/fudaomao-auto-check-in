@@ -1,0 +1,11 @@
+[Unit]
+Description=每分钟检查晚查寝通知投递结果
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=1s
+Unit=lzu-attendance-notify.service
+
+[Install]
+WantedBy=timers.target

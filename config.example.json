@@ -1,5 +1,14 @@
 {
-  "username": "校园卡号",
-  "password": "密码",
-  "jitter_max_seconds": 0
+  "username": "",
+  "password_protected": "",
+  "target_task_name": "物理学院2026级本科生晚查寝",
+  "start_date": "",
+  "run_at": "20:31",
+  "deadline": "22:30",
+  "location": {
+    "longitude": null,
+    "latitude": null,
+    "address": "",
+    "coordinate_system": "GCJ-02"
+  }
 }

@@ -1,0 +1,15 @@
+[Unit]
+Description=每日晚查寝签到
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/.local/share/lzu-attendance
+ExecStart=%h/.local/share/lzu-attendance/.venv/bin/python %h/.local/share/lzu-attendance/server_runner.py
+Restart=on-failure
+RestartSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/lzu-attendance
