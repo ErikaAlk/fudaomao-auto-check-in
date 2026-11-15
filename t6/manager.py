@@ -14,6 +14,7 @@ from typing import Literal
 from urllib.parse import parse_qs, urlsplit
 import urllib.request
 
+import eviltransform
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -192,7 +193,7 @@ async def privacy(request: Request, call_next):
 
 class Action(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
-    action: Literal['create_user', 'login', 'code', 'detect', 'refresh', 'configure', 'trial', 'run', 'check', 'toggle', 'alias']
+    action: Literal['create_user', 'login', 'code', 'detect', 'refresh', 'locate', 'configure', 'trial', 'run', 'check', 'toggle', 'alias']
     user_id: str = ''
     job_id: str = ''
     operation_id: str = ''
@@ -203,8 +204,10 @@ class Action(BaseModel):
     link: str = Field(default='', max_length=4096)
     start_date: str = ''
     weekdays: list[int] = Field(default_factory=lambda: list(range(1, 8)))
-    longitude: float = 0
-    latitude: float = 0
+    longitude: float = Field(default=0, ge=-180, le=180, allow_inf_nan=False)
+    latitude: float = Field(default=0, ge=-90, le=90, allow_inf_nan=False)
+    accuracy: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    located_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     address: str = Field(default='', max_length=512)
     enabled: bool = False
 
@@ -245,6 +248,14 @@ def task_ids(link):
 
 @app.post('/api/action', dependencies=[Depends(auth)])
 def action(payload: Action):
+    if payload.action == 'locate':
+        if payload.accuracy is None or payload.located_at is None:
+            raise HTTPException(422, '定位结果缺少精度或采集时间，请重新获取当前位置')
+        latitude, longitude = eviltransform.wgs2gcj(payload.latitude, payload.longitude)
+        longitude, latitude = round(longitude, 6), round(latitude, 6)
+        return {'location': {'longitude': longitude, 'latitude': latitude, 'coordinate_system': 'GCJ-02',
+                             'address': f'当前位置（经度{longitude:.6f}，纬度{latitude:.6f}）',
+                             'accuracy': payload.accuracy, 'located_at': payload.located_at}}
     with store.connect() as conn:
         if payload.action == 'create_user':
             if not payload.alias.strip() or not payload.username.strip() or not payload.password:
@@ -310,6 +321,8 @@ def action(payload: Action):
                 raise HTTPException(422, '请填写实际地址及 GCJ-02 经纬度')
             location = {'longitude': payload.longitude, 'latitude': payload.latitude,
                         'address': payload.address.strip(), 'coordinate_system': 'GCJ-02'}
+            if payload.accuracy is not None and payload.located_at is not None:
+                location.update(accuracy=payload.accuracy, located_at=payload.located_at, source='browser')
             conn.execute('UPDATE jobs SET start_date=?,weekdays=?,location=? WHERE id=?',
                          (payload.start_date, json.dumps(sorted(set(payload.weekdays))),
                           json.dumps(location, ensure_ascii=False), job['id']))
