@@ -32,3 +32,8 @@ wheels/
 env
 token
 token.sha256
+accounts/
+manager.token
+manager-settings.json
+.playwright-cli/
+output/playwright/

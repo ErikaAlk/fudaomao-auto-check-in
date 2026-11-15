@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -13,11 +14,11 @@ import eviltransform
 import lzu_api as api
 from secure_store import unprotect
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(os.environ.get('LZU_DATA_DIR', Path(__file__).resolve().parent))
 CONFIG = ROOT / 'config.json'
 LOGS = ROOT / 'logs'
 TZ = timezone(timedelta(hours=8))
-TARGET = '物理学院2026级本科生晚查寝'
+TARGET = os.environ.get('LZU_TARGET_NAME', '物理学院2026级本科生晚查寝')
 
 
 class StopRun(Exception):
@@ -115,6 +116,8 @@ def select_target(datas, stamp):
     for category in ('registerLeaveTasks', 'unSignedTasks', 'signedTasks'):
         for task in datas.get(category) or []:
             if task.get('taskName') != TARGET:
+                continue
+            if os.environ.get('LZU_SIGN_WID') and str(task.get('signWid')) != os.environ['LZU_SIGN_WID']:
                 continue
             begin = parse_school_time(task.get('singleTaskBeginTime'))
             end = parse_school_time(task.get('singleTaskEndTime'))

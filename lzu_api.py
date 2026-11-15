@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.environ.get('LZU_SESSION_DIR', os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 SESSION_PATH = os.path.join(BASE_DIR, "session.json")
 COOKIES_PATH = os.path.join(BASE_DIR, "cookies.txt")
