@@ -22,6 +22,7 @@ def import_legacy():
         user_id, job_id = store.identifier(), store.identifier()
         conn.execute('INSERT INTO users VALUES(?,?,?,?,1)',
                      (user_id, '本人', cfg['username'], cfg['password_protected']))
+        conn.execute("INSERT INTO user_routes(user_id,mode,bound) VALUES(?,'owner',1)",(user_id,))
         conn.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,1,1)',
                      (job_id, user_id, cfg['target_task_name'], str(task['signWid']), str(task['signInstanceWid']),
                       cfg['run_at'], cfg['deadline'], cfg['start_date'], json.dumps(list(range(1, 8))),

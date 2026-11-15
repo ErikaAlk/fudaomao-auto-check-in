@@ -59,6 +59,8 @@ def initialize():
                 job_id TEXT PRIMARY KEY, school_begin TEXT NOT NULL, school_end TEXT NOT NULL
             );
         ''')
+        from manager_notifications import initialize as initialize_notifications
+        initialize_notifications(conn)
 
 
 class TaskWindowError(ValueError):
