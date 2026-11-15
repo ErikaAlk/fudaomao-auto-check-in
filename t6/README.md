@@ -8,6 +8,8 @@
 
 将根目录 `attendance.py`、`lzu_api.py`、`secure_store.py` 与本目录 `manager.py`、`manager_store.py`、`manager_notifications.py`、`manager_worker.py`、`manager_admin.py`、`lzu-attendance-manager.service` 复制到同一个受保护运行目录。使用该目录的虚拟环境安装 `requirements-manager.txt` 中的依赖；从源码目录安装时执行 `运行目录/.venv/bin/pip install -r t6/requirements-manager.txt`。
 
+自动签到在首次基准时间后随机延后0至120秒，截止时间保持学校结束时间；短窗口缩小延迟，尽可能预留五秒供调度及连接学校，剩余不足五秒时不增加延迟。`daily_variations`按任务和北京时间日期保存随机参数，同日重试与重启保持一致。自动提交坐标在原坐标转换后的学校坐标周围50米内浮动，接近学校允许范围边界时缩小半径，范围校验与提交使用同一坐标。原始位置、手动签到和试签不受随机偏移影响。
+
 在运行目录执行：
 
 ```bash

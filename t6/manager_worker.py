@@ -1,4 +1,5 @@
 import fcntl
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -82,6 +83,12 @@ def main():
         update(operation_id, 'running', '正在连接学校')
         fdm = api.FdmClient()
         cfg = attendance.read_config(require_location=op['action'] in ('run', 'trial'))
+        if op['scheduled']:
+            day = datetime.fromtimestamp(op['created'], timezone(timedelta(hours=8))).date().isoformat()
+            with store.connect() as conn:
+                variation = store.daily_variation(conn, job['id'], day)
+            cfg['run_at'] = store.varied_start(job, day, variation).strftime('%H:%M:%S')
+            cfg['location_variation'] = variation
         attendance.ensure_auth(fdm, cfg)
         with store.connect() as conn:
             challenge=conn.execute("SELECT 1 FROM operation_challenges WHERE operation_id=? AND state='active'",(operation_id,)).fetchone()

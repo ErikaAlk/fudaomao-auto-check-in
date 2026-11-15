@@ -91,6 +91,9 @@ def advance():
             if conn.execute("SELECT 1 FROM operations WHERE user_id=? AND state IN ('queued','running','waiting_sms','sms_received')", (job['user_id'],)).fetchone():
                 continue
             day = stamp.date().isoformat()
+            variation = store.daily_variation(conn, job['id'], day)
+            if stamp < store.varied_start(job, day, variation):
+                continue
             conn.execute('INSERT OR IGNORE INTO days VALUES(?,?,0,0,0)', (job['id'], day))
             daily = conn.execute('SELECT * FROM days WHERE job_id=? AND day=?', (job['id'], day)).fetchone()
             if daily['done'] or daily['attempts'] >= 20 or daily['next_due'] > time.time():
