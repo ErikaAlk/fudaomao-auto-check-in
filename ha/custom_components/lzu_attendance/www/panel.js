@@ -20,12 +20,14 @@ class AttendancePanel extends HTMLElement {
     this.attachShadow({mode:'open'});
     this.data = null;
     this.activeOperation = null;
+    this.locationRequest = 0;
     this.shadowRoot.innerHTML = `<style>${style}</style><main><header><div class="row"><button class="menu" aria-label="打开侧边栏">☰</button><h1>签到</h1></div><button id="new-user" class="primary">新建用户</button></header><p id="global-status" class="status" role="status" aria-live="polite"></p><div id="users"><p>正在读取用户</p></div></main><dialog aria-labelledby="dialog-title"><h2 id="dialog-title"></h2><p class="step" id="step"></p><div id="dialog-body"></div><p class="status" id="dialog-status" role="status" aria-live="polite"></p><div class="actions"><button id="close">关闭</button><button id="next" class="primary"></button></div></dialog>`;
     this.$('.menu').onclick = () => this.dispatchEvent(new Event('hass-toggle-menu', {bubbles:true,composed:true}));
     this.$('#new-user').onclick = () => this.openNew();
     this.$('#close').onclick = () => this.$('dialog').close();
     this.$('dialog').addEventListener('close', () => {
       this.activeOperation = null;
+      this.locationRequest++;
       const opener = this.dialogOpener ? this.$(`[data-focus="${CSS.escape(this.dialogOpener)}"]`) : null;
       (opener || this.$('#new-user')).focus();
     });
@@ -60,8 +62,9 @@ class AttendancePanel extends HTMLElement {
 
   disconnectedCallback() { clearInterval(this.timer); }
 
-  execute(work) {
+  execute(work, isCurrent = () => true) {
     return work().then(() => {}, error => {
+      if (!isCurrent()) return;
       const target = this.$('dialog').open ? this.$('#dialog-status') : this.$('#global-status');
       target.classList.add('error');
       target.textContent = error.body?.detail || error.message || '操作失败，请检查服务连接';
@@ -144,7 +147,14 @@ class AttendancePanel extends HTMLElement {
       const form = this.$('#dialog-body form');
       if (form && !form.reportValidity()) return;
       this.$('#next').disabled = true;
-      try { await callback(); } finally { this.$('#next').disabled = false; }
+      if (form) form.dataset.saving = 'true';
+      const locationButton = this.$('#get-location');
+      if (locationButton) locationButton.disabled = true;
+      try { await callback(); } finally {
+        if (form) delete form.dataset.saving;
+        if (locationButton && form.isConnected) locationButton.disabled = false;
+        this.$('#next').disabled = false;
+      }
     });
     if (!this.$('dialog').open) {
       this.dialogOpener = this.shadowRoot.activeElement?.dataset?.focus;
@@ -190,16 +200,70 @@ class AttendancePanel extends HTMLElement {
 
   openSettings(job) {
     this.activeOperation = null;
+    this.locationRequest++;
     const loc = job.location;
+    this.locationFix = loc.accuracy !== undefined && loc.located_at !== undefined ? loc : null;
     this.dialog(job.name,'签到设置 · 北京时间',`<form><div class="grid"><div><label for="school-begin">任务开始时间</label><input id="school-begin" readonly value="${escape(job.school_begin ? job.school_begin.replace('T',' ').slice(0,19) : '待读取')}"></div><div><label for="school-end">任务结束时间</label><input id="school-end" readonly value="${escape(job.school_end ? job.school_end.replace('T',' ').slice(0,19) : '待读取')}"></div><div><label for="run-at">首次尝试时间</label><input id="run-at" readonly value="${escape(job.school_begin ? job.run_at : '待读取')}"></div><div><label for="start-date">开始日期</label><input id="start-date" type="date" required value="${escape(job.start_date)}"></div></div><label>执行星期</label><div class="weekdays">${['一','二','三','四','五','六','日'].map((day,i) => `<label><input type="checkbox" name="weekday" value="${i+1}" ${job.weekdays.includes(i+1) ? 'checked' : ''}>周${day}</label>`).join('')}</div><label for="address">实际签到地址</label><input id="address" required maxlength="512" value="${escape(loc.address || '')}"><div class="grid"><div><label for="longitude">经度（GCJ-02）</label><input id="longitude" required type="number" step="any" min="-180" max="180" value="${escape(loc.longitude ?? '')}"></div><div><label for="latitude">纬度（GCJ-02）</label><input id="latitude" required type="number" step="any" min="-90" max="90" value="${escape(loc.latitude ?? '')}"></div></div><p class="meta">任务开始五分钟后首次尝试，任务结束后停止。失败后等待五分钟，每天最多二十次。位置使用高德或腾讯地图 GCJ-02 坐标。</p></form>`,job.saved ? '保存设置' : '尝试签到并保存',async () => {
       const weekdays = [...this.shadowRoot.querySelectorAll('[name=weekday]:checked')].map(input => Number(input.value));
-      await this.call({action:'configure',job_id:job.id,start_date:this.$('#start-date').value,weekdays,address:this.$('#address').value,longitude:Number(this.$('#longitude').value),latitude:Number(this.$('#latitude').value)});
+      await this.call({action:'configure',job_id:job.id,start_date:this.$('#start-date').value,weekdays,address:this.$('#address').value,longitude:Number(this.$('#longitude').value),latitude:Number(this.$('#latitude').value),...(this.locationFix ? {accuracy:this.locationFix.accuracy,located_at:this.locationFix.located_at} : {})});
       if (job.saved) { this.$('dialog').close(); await this.refresh(); }
       else {
         const result = await this.call({action:'trial',job_id:job.id});
         this.watch(result.operation_id,job.user_id,'trial',job.id);
       }
     });
+    this.$('label[for="address"]').insertAdjacentHTML('beforebegin','<div class="toolbar"><button id="get-location" type="button">获取当前位置</button><p id="location-status" class="meta status" role="status" aria-live="polite"></p></div>');
+    this.$('#get-location').onclick = () => {
+      const request = ++this.locationRequest;
+      const form = this.$('#dialog-body form');
+      this.execute(() => this.fillCurrentLocation(request), () => request === this.locationRequest && form.isConnected && this.$('dialog').open);
+    };
+    for (const field of ['#longitude','#latitude','#address']) {
+      this.$(field).addEventListener('input', () => {
+        this.locationRequest++;
+        if (field !== '#address') this.locationFix = null;
+        if (!this.$('#dialog-body form').dataset.saving) {
+          this.$('#get-location').disabled = false;
+          this.$('#next').disabled = false;
+        }
+        this.$('#location-status').textContent = '';
+      });
+    }
+  }
+
+  async fillCurrentLocation(request) {
+    if (!window.isSecureContext) throw new Error('请使用 HTTPS 地址打开 Home Assistant 后获取位置');
+    if (!navigator.geolocation) throw new Error('当前浏览器不支持定位，请在手机浏览器中打开');
+    const form = this.$('#dialog-body form');
+    const button = this.$('#get-location');
+    const current = () => request === this.locationRequest && form.isConnected && this.$('dialog').open;
+    button.disabled = true;
+    this.$('#next').disabled = true;
+    this.$('#location-status').textContent = '正在获取当前位置，请允许定位';
+    this.$('#dialog-status').textContent = '';
+    let filled = false;
+    try {
+      const position = await new Promise((resolve,reject) => navigator.geolocation.getCurrentPosition(resolve,error => {
+        if (!current()) { resolve(null); return; }
+        const messages = {1:'定位权限未开启，请在手机和浏览器设置中允许定位',2:'暂时无法获取位置，请检查手机定位与网络后重试',3:'获取位置超时，请移动到定位信号良好的位置后重试'};
+        reject(new Error(messages[error.code] || '获取当前位置失败'));
+      },{enableHighAccuracy:true,maximumAge:0,timeout:30000}));
+      if (!position || !current()) return;
+      const result = await this.call({action:'locate',latitude:position.coords.latitude,longitude:position.coords.longitude,accuracy:position.coords.accuracy,located_at:position.timestamp});
+      if (!current()) return;
+      this.locationFix = result.location;
+      this.$('#longitude').value = result.location.longitude.toFixed(6);
+      this.$('#latitude').value = result.location.latitude.toFixed(6);
+      this.$('#address').value = result.location.address;
+      filled = true;
+      this.$('#location-status').textContent = `已填入当前位置，精度约 ±${Math.ceil(result.location.accuracy)} 米。可补充楼栋门牌，保存后生效。`;
+    } finally {
+      if (current()) {
+        button.disabled = false;
+        this.$('#next').disabled = false;
+        if (!filled) this.$('#location-status').textContent = '';
+      }
+    }
   }
 
   watch(id,userId,action,jobId) {
