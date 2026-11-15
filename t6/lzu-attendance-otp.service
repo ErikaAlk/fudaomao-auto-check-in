@@ -1,0 +1,21 @@
+[Unit]
+Description=晚查寝短信验证码填写服务
+After=network-online.target
+
+[Service]
+User=lzu-attendance
+Group=lzu-attendance
+WorkingDirectory=/opt/lzu-attendance-otp
+Environment=LZU_OTP_DATA=/var/lib/lzu-attendance-otp
+EnvironmentFile=/etc/lzu-attendance-otp/env
+ExecStart=/opt/lzu-attendance-otp/.venv/bin/python -m uvicorn otp_gateway:app --host 127.0.0.1 --port 8795 --no-access-log
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lzu-attendance-otp
+
+[Install]
+WantedBy=multi-user.target

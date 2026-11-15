@@ -1,50 +1,50 @@
-# fudaomao-auto-check-in
+# 辅导猫晚查寝
 
-兰州大学辅导猫查寝一键签到脚本。
+基于 [LYCaikano/fudaomao-auto-check-in](https://github.com/LYCaikano/fudaomao-auto-check-in) 的个人改版，提供 Windows 配置界面与 Linux/T6 定时签到、学校结果回查、QQ 通知和短信验证码填写通道。
 
-## 使用
+## 使用方式
 
-```bash
-pip install -r requirements.txt   # cryptography 必需；pillow+numpy 用于照片扰动
-cp config.example.json config.json   # 填入校园卡号和密码
-python3 run.py
+Windows 使用 Python 3.12（64 位），依次运行 `01_安装环境.cmd`、`02_填写配置.cmd`。安装入口联网安装 `requirements.lock.txt` 中的依赖。填写校园卡号、密码、实际住宿地址以及高德或腾讯地图的 GCJ-02 坐标，完成登录初始化后再运行 `03_启用每日签到.cmd`。
+
+`04_只读检查.cmd` 查询学校状态，`05_查看状态.cmd` 显示本机结果，`06_停用每日签到.cmd` 停用 Windows 任务。Windows 默认北京时间20:31开始、22:30截止；Linux/T6 的21:05重试规则见 [T6部署说明](t6/README.md)。
+
+学校登录接口使用校园卡号。密码在 Windows 使用 DPAPI 加密，在 Linux 使用本机 Fernet 密钥加密；迁移时需要重新加密。首次配置与登录不会提交签到。
+
+更换账号或重新填写密码后会清理旧学校会话，初始化将使用当前凭据重新登录。
+
+## 签到规则
+
+- 精确匹配“物理学院2026级本科生晚查寝”，每次从学校查询北京时间当天的实例。
+- 将实际住宿位置由 GCJ-02 转换为 BD-09，范围校验和提交使用相同坐标。
+- 提交前保存实例标记，提交后查询学校。只有学校确认已签到才记录成功；结果未知时保留标记，停止重复提交。
+- 学校要求拍照、扫码、NFC 或其他方式时，在学校客户端处理。短信登录验证码可在 Windows 本机输入，或使用 T6 的 HTTPS 填写通道。
+
+## 目录
+
+| 位置 | 用途 |
+| --- | --- |
+| `attendance.py` | 改版签到入口、任务过滤、范围与时间检查、结果回查 |
+| `lzu_api.py` | 学校登录和查寝接口 |
+| `configure.py`、`secure_store.py` | 本机配置界面及凭据加密 |
+| `install_task.py`、`scheduled.pyw` | Windows 计划任务 |
+| `t6/` | Linux 调度、QQ 通知、短信验证码服务及部署模板 |
+| `config.example.json` | 不包含凭据的配置模板 |
+| `run.py` | 上游程序 |
+| `docs/upstream-readme.md` | 上游原始说明 |
+
+私人配置、密码文件、令牌、学校会话、签到记录、照片与本地执行计划均被 Git 忽略。使用后的运行目录不能直接作为源码提交。
+
+## 验证
+
+Windows 环境安装后运行：
+
+```powershell
+.venv/Scripts/python.exe verify_environment.py
+.venv/Scripts/python.exe attendance.py --check
 ```
 
-拍照任务需要事先把一张或多张宿舍照片（jpg/png）放进 `pic/`。
+第一条只检查运行组件；第二条需要本人完成学校登录配置，只查询状态，不提交签到。T6 的 `verify_rules.py` 使用独立 SQLite 验证重试、通知节点和时间表达式，不发送通知、不提交学校任务。
 
-## 支持情况
+## 来源
 
-| 签到方式 | 状态 |
-|---|---|
-| 定位 + 拍照 | 支持，已验证 |
-| 纯定位 | 支持，已验证 |
-| 免签/登记制任务（registerLeaveTasks） | 时段内会尝试提交，未充分验证 |
-| 风控验证码触发时空 ticket 绕过 | 有时能过，未验证 |
-| 扫码（signMode 1/2/4） | 不支持，跳过并提示 |
-| IoT 设备（signMode 3） | 不支持，跳过并提示 |
-| NFC（signMode 5） | 不支持，跳过并提示 |
-
-## 行为
-
-- 每次运行先检查登录状态：本地会话（`cookies.txt`）有效直接用；失效则用 `session.json` 的令牌重跑认证链；令牌也被顶就账密重登，短信验证码手动输一次。device_id 固定，正常长期不需要验证码
-- 非交互运行（cron 等）先随机延迟，上限由 config.json 的 `jitter_max_seconds` 控制（默认 0）；手动运行立即开始
-- 自动找当前时段内的未签/登记任务；已签、未开始、已结束的不动
-- 定位取任务围栏圆内随机一点（收缩到 80% 半径避开边界）
-- 拍照任务从 `pic/` 随机选一张，扰动重编码（去 EXIF、防查重）后 OSS 直传提交；无 pillow/numpy 时原样上传
-
-## 文件
-
-| 文件 | 说明 |
-|---|---|
-| `run.py` | 程序入口 |
-| `requirements.txt` | Python 依赖 |
-| `config.json` | 账号配置（校园卡号/密码；`jitter_max_seconds` 定时随机延迟上限） |
-| `pic/` | 签到照片，随机选一张 |
-| `session.json` | 持久化登录令牌与设备 ID（自动生成） |
-| `cookies.txt` | fdm 会话 Cookie（自动生成） |
-
-## 原理备注
-
-- 登录：网关 `loginV2`（AES-CBC，key=IV 硬编码于 App）→ 短信二次认证 → `getSt` 换 ST → fdm 302 认证链落 `MOD_AUTH_CAS`
-- 接口信封 `{"code":"0","datas":{...}}`；会话脱钩时返回空壳 `WEC-HASLOGIN:false`，识别后自动重建会话重试
-- 风控 `checkValidation` 按需触发 PicCheck 点选识图验证码，验证结果作为 `submitSign.ticket`
+学校接口提取自上游提交 `35e4a809f089337a2c9fbcb97e90aba66e0db4b8`。本仓库通过 GitHub fork 保留完整上游历史，`upstream` 用于跟踪原作者，`origin` 为个人维护仓库。上游当前未提供许可证文件，本仓库保留作者署名和来源，不另行声明上游代码的授权。

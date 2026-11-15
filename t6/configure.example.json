@@ -1,0 +1,21 @@
+{
+  "config": {
+    "username": "",
+    "password_protected": "",
+    "target_task_name": "物理学院2026级本科生晚查寝",
+    "start_date": "",
+    "run_at": "21:05",
+    "deadline": "23:50",
+    "location": {
+      "longitude": null,
+      "latitude": null,
+      "address": "",
+      "coordinate_system": "GCJ-02"
+    },
+    "otp_service_url": "https://attendance.example.com/attendance-otp"
+  },
+  "password": "",
+  "notify_url": "https://notify.example.com/api/notifications",
+  "notify_token": "",
+  "otp_token": ""
+}
